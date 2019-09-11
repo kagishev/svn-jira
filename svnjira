@@ -1,0 +1,166 @@
+#!/bin/bash
+
+#%
+#% ${scriptName} - commit file(s) to SVN and leave a comment with code changes in JIRA 
+#%
+#% usage: ${scriptName} -m|-message <ticket number> commit <path> -u|-username <user> [--no-auth-cache]
+#%
+#% where:
+#%  <ticket number>  :  commit message - should be a ticket number
+#%  <path>           :  files or dirs to commit
+#%  <user>           :  your username
+#%
+#% Valid options
+#%  --no-auth-cache  :  do not cache authentication tokens
+#%
+
+scriptName=$(echo ${0##*/})
+#scriptDir=$(readlink -m $(dirname $0))
+tmpDir=/tmp/${scriptName}.$$     
+cacheSvnCreds=0
+
+if [[ $# -lt 1 ]] || [[ ! $1 =~ -\m|-message ]] || [[ ! $3 =~ -\u|username ]] || [[ ! $5 =~ -\c|commit ]]; then
+	awk -v scriptName="${scriptName}" '/^#%/ {gsub("[$]{scriptName}", scriptName, $0); print substr($0,3)}' $0
+	exit 1
+fi
+
+setx=readParameters
+#==============================
+readParameters ()
+#==============================
+{
+	while [ $# -gt 0 ]
+	do
+		case "$1" in
+			-m|-message)
+				if [[ ! $2 =~ [a-zA-Z]-[0-9]{1,4} ]]; then
+					echo ">> ${scriptName} ERROR: please enter a valid ticket number..." 1>&2
+					exit 1
+				fi
+				ticketNumner="$2"
+				#echo $ticketNumner
+				shift 2
+			;;
+			-u|-username)
+				if [ -z $2 ]; then
+					echo ">> ${scriptName} ERROR: please specify a username..." 1>&2
+					exit 1
+				fi
+				userName=$2
+				#echo $userName
+				shift 2
+			;;
+			-c|commit)
+				commitPath=$2
+				shift 2
+			;;
+			--no-auth-cache)
+				cacheSvnCreds=1
+				shift
+			;;
+			*)
+				echo ">> ${scriptName} ERROR: incorrect parameter $1, exiting..." 1>&2
+				exit 1
+			;;
+		esac
+	done
+} # readParameters
+
+setx=formatData
+#==============================
+formatData ()
+#==============================
+{
+# Display the differences between two revisions
+svnDiff=`svn diff ${commitPath} 2>${tmpDir}/svnerr.log`
+
+if [[ -s ${tmpDir}/svnerr.log ]]; then
+	echo ${tmpDir}
+	cat ${tmpDir}/svnerr.log
+	exit 1
+elif [[ ${svnDiff} ]]; then
+	echo ${svnDiff}
+	# Format the output into JSON format
+	echo ${svnDiff} | sed ':a;N;$!ba;s|\n|\\\\r\\\\n|g' > ${tmpDir}/svnDiff.txt
+	svnDiff=`cat ${tmpDir}/svnDiff.txt`
+	rm ${tmpDir}/svnDiff.txt
+	jsonData=`cat <<EOF
+		{
+		   "body":"\r\n{code}\r\n${svnDiff}\r\n{code}\r\n",
+		   "visibility": { 
+				"type": "role", 
+				"value": "Internal"
+		   }
+		}
+EOF`
+else
+	echo ">> ${scriptName} ERROR: no files to commit, exiting..." 1>&2
+	exit 1
+fi
+
+} # formatData
+
+setx=svnCommit
+#==============================
+svnCommit ()
+#==============================
+{
+	if [[ ${cacheSvnCreds} -eq 1 ]]; then
+		# Commit file(s) to SVN without caching authentication tokens
+		svn -m "${ticketNumner}" commit ${commitPath} --username ${userName} --no-auth-cache
+		if [ $? != 0 ]; then
+			exit $?
+		fi
+	else
+		# Commit file(s) to SVN with authentication tokens caching
+		svn -m "${ticketNumner}" commit ${commitPath} --username ${userName}
+		if [ $? != 0 ]; then
+			exit $?
+		fi
+	fi
+} # svnCommit
+
+setx=sendJiraRequest
+#==============================
+sendJiraRequest ()
+#==============================
+{
+# Send POST request to JIRA REST API
+# https://developer.atlassian.com/server/jira/platform/jira-rest-api-example-add-comment-8946422/
+
+jiraURL="https://<yourjiradomain>/rest/api/2/issue/${ticketNumner}/comment"
+echo "JIRA:"
+curl -s -D ${tmpDir}/curlheaders.log -u ${userName} -X POST --data "${jsonData}" -H "Content-Type: application/json" ${jiraURL} -o ${tmpDir}/curloutput.log
+
+# Validate HTTP codes
+if [[ $(cat ${tmpDir}/curlheaders.log | grep "HTTP/1.1 201 Created") ]]; then
+	echo "Comment has been created succesfully"
+elif [[ $(cat ${tmpDir}/curlheaders.log | grep "HTTP/1.1 401 Unauthorized") ]]; then
+	echo ">> ${scriptName} ERROR: wrong password, exiting..." 1>&2
+	exit 1
+else
+	httpCode=`head -1 ${tmpDir}/curlheaders.log`
+	echo ">> ${scriptName} ERROR: ${httpCode}" 1>&2
+	exit 1
+fi	
+} # sendJiraRequest
+
+setx=main
+#==============================
+# MAIN SHELL BODY
+#==============================
+
+readParameters "$@"
+
+rm -rf ${tmpDir};
+mkdir -m 777 -p ${tmpDir}
+if [[ $? -ne 0 ]]; then
+	echo ">> ${scriptName} ERROR: could not create temporary directory \"${tmpDir}\"" >&2
+	exit 1
+fi
+
+formatData
+svnCommit
+sendJiraRequest
+
+exit 0
