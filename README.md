@@ -1,4 +1,4 @@
- svnjira - commit file(s) to SVN and leave a comment with code changes in JIRA
+ `svnjira - commit file(s) to SVN and leave a comment with code changes in JIRA
 
  usage: svnjira -m|-message <ticket number> commit <path> -u|-username <user> [--no-auth-cache]
 
@@ -8,5 +8,5 @@
   <user>           :  your username
 
  Valid options
-  --no-auth-cache  :  do not cache authentication tokens
+  --no-auth-cache  :  do not cache authentication tokens`
 
